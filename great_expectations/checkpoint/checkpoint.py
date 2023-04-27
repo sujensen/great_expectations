@@ -65,6 +65,7 @@ from great_expectations.validation_operators.types.validation_operator_result im
 if TYPE_CHECKING:
     from great_expectations.data_context import AbstractDataContext
     from great_expectations.validator.validator import Validator
+from opentelemetry.sdk.trace import Tracer
 
 
 logger = logging.getLogger(__name__)
@@ -754,58 +755,60 @@ constructor arguments.
             CheckpointConfig, self.get_config()
         )
 
-        if (
-            "runtime_configuration" in checkpoint_config_from_store
-            and checkpoint_config_from_store.runtime_configuration
-            and "result_format" in checkpoint_config_from_store.runtime_configuration
-        ):
-            result_format = (
-                result_format
-                or checkpoint_config_from_store.runtime_configuration.get(
-                    "result_format"
+        tracer: Tracer = self._data_context._get_tracer()
+        with tracer.start_as_current_span(__name__ + ".run_with_runtime_args") as span:
+            if (
+                "runtime_configuration" in checkpoint_config_from_store
+                and checkpoint_config_from_store.runtime_configuration
+                and "result_format" in checkpoint_config_from_store.runtime_configuration
+            ):
+                result_format = (
+                    result_format
+                    or checkpoint_config_from_store.runtime_configuration.get(
+                       "result_format"
+                    )
                 )
+
+            if result_format is None:
+                result_format = {"result_format": "SUMMARY"}
+
+            batch_request = get_batch_request_as_dict(batch_request=batch_request)
+            validations = get_validations_with_batch_request_as_dict(
+                validations=validations
             )
 
-        if result_format is None:
-            result_format = {"result_format": "SUMMARY"}
+            checkpoint_config_from_call_args: dict = {
+                "template_name": template_name,
+                "run_name_template": run_name_template,
+                "expectation_suite_name": expectation_suite_name,
+                "batch_request": batch_request,
+                "action_list": action_list,
+                "evaluation_parameters": evaluation_parameters,
+                "runtime_configuration": runtime_configuration,
+                "validations": validations,
+                "profilers": profilers,
+                "run_id": run_id,
+                "run_name": run_name,
+                "run_time": run_time,
+                "result_format": result_format,
+                "expectation_suite_ge_cloud_id": expectation_suite_ge_cloud_id,
+            }
 
-        batch_request = get_batch_request_as_dict(batch_request=batch_request)
-        validations = get_validations_with_batch_request_as_dict(
-            validations=validations
-        )
+            checkpoint_config: dict = {
+                key: value
+                for key, value in checkpoint_config_from_store.items()
+                if key in checkpoint_config_from_call_args
+            }
+            checkpoint_config.update(checkpoint_config_from_call_args)
 
-        checkpoint_config_from_call_args: dict = {
-            "template_name": template_name,
-            "run_name_template": run_name_template,
-            "expectation_suite_name": expectation_suite_name,
-            "batch_request": batch_request,
-            "action_list": action_list,
-            "evaluation_parameters": evaluation_parameters,
-            "runtime_configuration": runtime_configuration,
-            "validations": validations,
-            "profilers": profilers,
-            "run_id": run_id,
-            "run_name": run_name,
-            "run_time": run_time,
-            "result_format": result_format,
-            "expectation_suite_ge_cloud_id": expectation_suite_ge_cloud_id,
-        }
+            checkpoint_run_arguments: dict = dict(**checkpoint_config, **kwargs)
+            filter_properties_dict(
+                properties=checkpoint_run_arguments,
+                clean_falsy=True,
+                inplace=True,
+            )
 
-        checkpoint_config: dict = {
-            key: value
-            for key, value in checkpoint_config_from_store.items()
-            if key in checkpoint_config_from_call_args
-        }
-        checkpoint_config.update(checkpoint_config_from_call_args)
-
-        checkpoint_run_arguments: dict = dict(**checkpoint_config, **kwargs)
-        filter_properties_dict(
-            properties=checkpoint_run_arguments,
-            clean_falsy=True,
-            inplace=True,
-        )
-
-        return self.run(**checkpoint_run_arguments)
+            return self.run(**checkpoint_run_arguments)
 
     @staticmethod
     def construct_from_config_args(

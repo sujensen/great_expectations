@@ -17,6 +17,7 @@ def send_usage_message(
     api_version: str = "v3",
     success: bool = False,
 ) -> None:
+    print("HEY in usage_statics/util.py, in send_usage_message")
     if not event:
         event = None
 
@@ -29,7 +30,9 @@ def send_usage_message(
         from great_expectations.core.usage_statistics.usage_statistics import (
             send_usage_message as send_usage_stats_message,
         )
-
+        print("  (util) event = " + event)
+        print("  (util) data_context = <redacted>")
+        print("  (util) evnet_payload = " + str(event_payload))
         send_usage_stats_message(
             data_context=data_context,
             event=event,

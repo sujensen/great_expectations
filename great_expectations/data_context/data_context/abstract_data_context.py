@@ -31,6 +31,7 @@ from typing import (
 
 from dateutil.parser import parse
 from marshmallow import ValidationError
+from opentelemetry.trace import ProxyTracerProvider
 from ruamel.yaml.comments import CommentedMap
 from typing_extensions import Literal
 
@@ -133,6 +134,18 @@ from great_expectations.core.usage_statistics.usage_statistics import (  # isort
     usage_statistics_enabled_method,
 )
 
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import Tracer
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    ConsoleSpanExporter,
+)
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource, SERVICE_NAMESPACE, SERVICE_INSTANCE_ID
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 try:
     from sqlalchemy.exc import SQLAlchemyError
 except ImportError:
@@ -283,6 +296,39 @@ class AbstractDataContext(ConfigPeer, ABC):
         # Init data_context_id
         self._data_context_id = self._construct_data_context_id()
 
+        # Start tracing, unless opt_out is true, then just send trace to the console
+        # SERVICE_NAME is required for most backends, other attributes are recommended not required.
+        # See standard resource attributes here: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/resource/semantic_conventions/README.md
+        # Instead of just data context Id, maybe the service.instance.id could be like
+        # <organizationId>.<sessionId>.<contextId>, or
+        # <userId>.<sessionId>.<contextId>
+        # if those additional identifiers were set (groupings of data context Ids).
+        resource = Resource(attributes={
+            SERVICE_NAME: "great-expectations",
+            SERVICE_NAMESPACE: "oss", # or "cloud". This identifies the team responsible for this service name.
+            SERVICE_INSTANCE_ID: self._data_context_id  # Data context Id is the identifier for this instance of the service
+        })
+        # Try to get (or set) the global provider
+        provider = trace.get_tracer_provider()
+        if isinstance(provider, ProxyTracerProvider):
+            provider = TracerProvider(resource=resource)
+            trace.set_tracer_provider(provider)
+        opt_out = False
+        if opt_out:
+            # Opt-out true means trace goes to the console
+            processor = BatchSpanProcessor(ConsoleSpanExporter())
+            provider.add_span_processor(processor)
+            # Acquire a tracer
+            tracer = trace.get_tracer(__name__ + ".__init__")
+        else:
+            # Did not opt-out
+            # Create a tracer that actually gets exported to a OTLP collector over HTTP
+            processor = BatchSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:4318/v1/traces"))
+            provider.add_span_processor(processor)
+            tracer = trace.get_tracer(__name__ + ".__init__")
+
+        self.tracer = tracer
+
         # Override the project_config data_context_id if an expectations_store was already set up
         self.config.anonymous_usage_statistics.data_context_id = self._data_context_id
         self._initialize_usage_statistics(
@@ -318,6 +364,9 @@ class AbstractDataContext(ConfigPeer, ABC):
                 )
 
         self._attach_zep_config_datasources(self.zep_config)
+
+    def _get_tracer(self) -> Tracer:
+        return self.tracer
 
     def _init_config_provider(self) -> _ConfigurationProvider:
         config_provider = _ConfigurationProvider()
@@ -1520,23 +1569,25 @@ class AbstractDataContext(ConfigPeer, ABC):
             with contain a "name", "class_name", and "module_name" at a minimum.
         """
         datasources: List[dict] = []
+        tracer: Tracer = self._get_tracer()
+        with tracer.start_as_current_span(__name__ + ".list_datasources") as span:
 
-        datasource_name: str
-        datasource_config: Union[dict, DatasourceConfig]
-        serializer = NamedDatasourceSerializer(schema=datasourceConfigSchema)
+            datasource_name: str
+            datasource_config: Union[dict, DatasourceConfig]
+            serializer = NamedDatasourceSerializer(schema=datasourceConfigSchema)
 
-        for datasource_name, datasource_config in self.config.datasources.items():  # type: ignore[union-attr]
-            if isinstance(datasource_config, dict):
-                datasource_config = DatasourceConfig(**datasource_config)
-            datasource_config.name = datasource_name
+            for datasource_name, datasource_config in self.config.datasources.items():  # type: ignore[union-attr]
+                if isinstance(datasource_config, dict):
+                    datasource_config = DatasourceConfig(**datasource_config)
+                datasource_config.name = datasource_name
 
-            masked_config: dict = (
-                self._serialize_substitute_and_sanitize_datasource_config(
-                    serializer, datasource_config
+                masked_config: dict = (
+                    self._serialize_substitute_and_sanitize_datasource_config(
+                        serializer, datasource_config
+                    )
                 )
-            )
-            datasources.append(masked_config)
-        return datasources
+                datasources.append(masked_config)
+            return datasources
 
     @public_api
     @deprecated_argument(argument_name="save_changes", version="0.15.32")
@@ -2130,33 +2181,35 @@ class AbstractDataContext(ConfigPeer, ABC):
         Returns:
             CheckpointResult
         """
-        # <GX_RENAME>
-        id = self._resolve_id_and_ge_cloud_id(id=id, ge_cloud_id=ge_cloud_id)
-        expectation_suite_id = self._resolve_id_and_ge_cloud_id(
-            id=expectation_suite_id, ge_cloud_id=expectation_suite_ge_cloud_id
-        )
-        del ge_cloud_id
-        del expectation_suite_ge_cloud_id
+        tracer: Tracer = self._get_tracer()
+        with tracer.start_as_current_span(__name__ + ".run_checkpoint") as span:
+            # <GX_RENAME>
+            id = self._resolve_id_and_ge_cloud_id(id=id, ge_cloud_id=ge_cloud_id)
+            expectation_suite_id = self._resolve_id_and_ge_cloud_id(
+                id=expectation_suite_id, ge_cloud_id=expectation_suite_ge_cloud_id
+            )
+            del ge_cloud_id
+            del expectation_suite_ge_cloud_id
 
-        return self._run_checkpoint(
-            checkpoint_name=checkpoint_name,
-            id=id,
-            template_name=template_name,
-            run_name_template=run_name_template,
-            expectation_suite_name=expectation_suite_name,
-            batch_request=batch_request,
-            action_list=action_list,
-            evaluation_parameters=evaluation_parameters,
-            runtime_configuration=runtime_configuration,
-            validations=validations,
-            profilers=profilers,
-            run_id=run_id,
-            run_name=run_name,
-            run_time=run_time,
-            result_format=result_format,
-            expectation_suite_ge_cloud_id=expectation_suite_id,
-            **kwargs,
-        )
+            return self._run_checkpoint(
+                checkpoint_name=checkpoint_name,
+                id=id,
+                template_name=template_name,
+                run_name_template=run_name_template,
+                expectation_suite_name=expectation_suite_name,
+                batch_request=batch_request,
+                action_list=action_list,
+                evaluation_parameters=evaluation_parameters,
+                runtime_configuration=runtime_configuration,
+                validations=validations,
+                profilers=profilers,
+                run_id=run_id,
+                run_name=run_name,
+                run_time=run_time,
+                result_format=result_format,
+                expectation_suite_ge_cloud_id=expectation_suite_id,
+                **kwargs,
+            )
 
     def _run_checkpoint(
         self,

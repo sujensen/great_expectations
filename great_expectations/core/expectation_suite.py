@@ -20,6 +20,7 @@ from typing import (
 )
 
 from marshmallow import Schema, ValidationError, fields, pre_dump
+from opentelemetry.sdk.trace import Tracer
 
 import great_expectations as gx
 from great_expectations import __version__ as ge_version
@@ -666,13 +667,15 @@ class ExpectationSuite(SerializableDictDot):
         return expectation_configuration
 
     def send_usage_event(self, success: bool) -> None:
-        usage_stats_event_payload: dict = {}
-        if self._data_context is not None:
-            self._data_context.send_usage_message(
-                event=UsageStatsEvents.EXPECTATION_SUITE_ADD_EXPECTATION,
-                event_payload=usage_stats_event_payload,
-                success=success,
-            )
+        tracer: Tracer = self._data_context.tracer
+        with tracer.start_as_current_span(__name__ + ".add_expectation") as span:
+            usage_stats_event_payload: dict = {}
+            if self._data_context is not None:
+                self._data_context.send_usage_message(
+                    event=UsageStatsEvents.EXPECTATION_SUITE_ADD_EXPECTATION,
+                    event_payload=usage_stats_event_payload,
+                    success=success,
+                )
 
     def add_expectation_configurations(
         self,

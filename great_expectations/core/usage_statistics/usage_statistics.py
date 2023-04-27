@@ -617,6 +617,9 @@ def send_usage_message(
         handler: UsageStatisticsHandler = getattr(
             data_context, "_usage_statistics_handler", None
         )
+        print("HEY in send_usage_message:")
+        print("  event: " + event)
+        print("  event_payload: " + event_payload)
         if handler is not None:
             message: dict = {
                 "event": event,

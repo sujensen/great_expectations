@@ -30,6 +30,8 @@ try:
 except ImportError:
     SQLAlchemyError = RuntimeError
 
+from opentelemetry.sdk.trace import Tracer
+
 
 """
 --ge-feature-maturity-info--
@@ -242,40 +244,42 @@ def checkpoint_delete(ctx: click.Context, checkpoint: str) -> None:
 def checkpoint_run(ctx: click.Context, checkpoint: str) -> None:
     """Run a Checkpoint."""
     context: DataContext = ctx.obj.data_context
-    usage_event_end: str = ctx.obj.usage_event_end
+    tracer: Tracer = context._get_tracer()
+    with tracer.start_as_current_span(__name__ + ".checkpoint_run") as span:
+        usage_event_end: str = ctx.obj.usage_event_end
 
-    try:
-        result: CheckpointResult = toolkit.run_checkpoint(
-            context=context,
-            checkpoint_name=checkpoint,
-            usage_event=usage_event_end,
-        )
-    except Exception as e:
-        toolkit.exit_with_failure_message_and_stats(
-            data_context=context,
-            usage_event=usage_event_end,
-            message=f"<red>{e}</red>",
-        )
-        return
+        try:
+            result: CheckpointResult = toolkit.run_checkpoint(
+                context=context,
+                checkpoint_name=checkpoint,
+                usage_event=usage_event_end,
+            )
+        except Exception as e:
+            toolkit.exit_with_failure_message_and_stats(
+                data_context=context,
+                usage_event=usage_event_end,
+                message=f"<red>{e}</red>",
+            )
+            return
 
-    if not result["success"]:
-        cli_message(string="Validation failed!")
+        if not result["success"]:
+            cli_message(string="Validation failed!")
+            send_usage_message(
+                data_context=context,
+                event=usage_event_end,
+                success=True,
+            )
+            print_validation_operator_results_details(result=result)
+            sys.exit(1)
+
+        cli_message("Validation succeeded!")
         send_usage_message(
             data_context=context,
             event=usage_event_end,
             success=True,
         )
         print_validation_operator_results_details(result=result)
-        sys.exit(1)
-
-    cli_message("Validation succeeded!")
-    send_usage_message(
-        data_context=context,
-        event=usage_event_end,
-        success=True,
-    )
-    print_validation_operator_results_details(result=result)
-    sys.exit(0)
+        sys.exit(0)
 
 
 def print_validation_operator_results_details(

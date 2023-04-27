@@ -7,6 +7,7 @@ import sys
 from typing import TYPE_CHECKING, Dict, List, Optional, Type, Union
 
 import click
+from opentelemetry.trace import StatusCode
 from typing_extensions import TypeAlias
 
 from great_expectations.cli import toolkit
@@ -20,6 +21,7 @@ from great_expectations.render.renderer.datasource_new_notebook_renderer import 
     DatasourceNewNotebookRenderer,
 )
 from great_expectations.util import get_context
+from opentelemetry.sdk.trace import Tracer
 
 if TYPE_CHECKING:
     from great_expectations.data_context import FileDataContext
@@ -109,69 +111,74 @@ def datasource_new(ctx: click.Context, name: str, jupyter: bool) -> None:
 def delete_datasource(ctx: click.Context, datasource: str) -> None:
     """Delete the datasource specified as an argument"""
     context: FileDataContext = ctx.obj.data_context
-    usage_event_end: str = ctx.obj.usage_event_end
+    tracer: Tracer = context._get_tracer()
+    with tracer.start_as_current_span(__name__ + ".delete_datasource") as span:
+        usage_event_end: str = ctx.obj.usage_event_end
 
-    if not ctx.obj.assume_yes:
-        toolkit.confirm_proceed_or_exit(
-            confirm_prompt=f"""\nAre you sure you want to delete the Datasource "{datasource}" (this action is irreversible)?" """,
-            continuation_message=f"Datasource `{datasource}` was not deleted.",
-            exit_on_no=True,
-            data_context=context,
-            usage_stats_event=usage_event_end,
-        )
+        if not ctx.obj.assume_yes:
+            toolkit.confirm_proceed_or_exit(
+                confirm_prompt=f"""\nAre you sure you want to delete the Datasource "{datasource}" (this action is irreversible)?" """,
+                continuation_message=f"Datasource `{datasource}` was not deleted.",
+                exit_on_no=True,
+                data_context=context,
+                usage_stats_event=usage_event_end,
+            )
 
-    try:
-        context.delete_datasource(datasource)
-    except ValueError:
-        cli_message(f"<red>Datasource {datasource} could not be found.</red>")
-        send_usage_message(
-            data_context=context,
-            event=usage_event_end,
-            success=False,
-        )
-        sys.exit(1)
-    try:
-        context.get_datasource(datasource)
-    except ValueError:
-        cli_message("<green>{}</green>".format("Datasource deleted successfully."))
-        send_usage_message(
-            data_context=context,
-            event=usage_event_end,
-            success=True,
-        )
-        sys.exit(0)
+        try:
+            context.delete_datasource(datasource)
+        except ValueError:
+            cli_message(f"<red>Datasource {datasource} could not be found.</red>")
+            send_usage_message(
+                data_context=context,
+                event=usage_event_end,
+                success=False,
+            )
+            sys.exit(1)
+        try:
+            context.get_datasource(datasource)
+        except ValueError:
+            cli_message("<green>{}</green>".format("Datasource deleted successfully."))
+            send_usage_message(
+                data_context=context,
+                event=usage_event_end,
+                success=True,
+            )
+            sys.exit(0)
 
 
+#@tracer.start_as_current_span
 @datasource.command(name="list")
 @click.pass_context
 def datasource_list(ctx: click.Context) -> None:
     """List known Datasources."""
     context: FileDataContext = ctx.obj.data_context
-    usage_event_end: str = ctx.obj.usage_event_end
-    try:
-        datasources = context.list_datasources()
-        cli_message(_build_datasource_intro_string(datasources))
-        for datasource in datasources:
-            cli_message("")
-            cli_message_dict(
-                {
-                    "name": datasource["name"],
-                    "class_name": datasource["class_name"],
-                }
-            )
+    tracer: Tracer = context._get_tracer()
+    with tracer.start_as_current_span(__name__ + ".datasource_list") as span:
+        usage_event_end: str = ctx.obj.usage_event_end
+        try:
+            datasources = context.list_datasources()
+            cli_message(_build_datasource_intro_string(datasources))
+            for datasource in datasources:
+                cli_message("")
+                cli_message_dict(
+                    {
+                        "name": datasource["name"],
+                        "class_name": datasource["class_name"],
+                    }
+                )
 
-        send_usage_message(
-            data_context=context,
-            event=usage_event_end,
-            success=True,
-        )
-    except Exception as e:
-        toolkit.exit_with_failure_message_and_stats(
-            data_context=context,
-            usage_event=usage_event_end,
-            message=f"<red>{e}</red>",
-        )
-        return
+            send_usage_message(
+                data_context=context,
+                event=usage_event_end,
+                success=True,
+            )
+        except Exception as e:
+            toolkit.exit_with_failure_message_and_stats(
+                data_context=context,
+                usage_event=usage_event_end,
+                message=f"<red>{e}</red>",
+            )
+            return
 
 
 def _build_datasource_intro_string(datasources: List[dict]) -> str:
@@ -189,61 +196,63 @@ def _datasource_new_flow(
     datasource_name: Optional[str] = None,
     jupyter: bool = True,
 ) -> None:
-    helper: BaseDatasourceNewYamlHelper
-    files_or_sql_selection = click.prompt(
-        """
-What data would you like Great Expectations to connect to?
-    1. Files on a filesystem (for processing with Pandas or Spark)
-    2. Relational database (SQL)
-""",
-        type=click.Choice(["1", "2"]),
-        show_choices=False,
-    )
-    if files_or_sql_selection == "1":
-        selected_files_backend = _prompt_for_execution_engine()
-        helper = _get_files_helper(
-            selected_files_backend,
-            context_root_dir=context.root_directory,  # type: ignore[arg-type] # could be None
-            datasource_name=datasource_name,
+    tracer: Tracer = context._get_tracer()
+    with tracer.start_as_current_span(__name__ + "._datasource_new_flow") as span:
+        helper: BaseDatasourceNewYamlHelper
+        files_or_sql_selection = click.prompt(
+            """
+    What data would you like Great Expectations to connect to?
+        1. Files on a filesystem (for processing with Pandas or Spark)
+        2. Relational database (SQL)
+    """,
+            type=click.Choice(["1", "2"]),
+            show_choices=False,
         )
-    elif files_or_sql_selection == "2":
-        if not _verify_sqlalchemy_dependent_modules():
+        if files_or_sql_selection == "1":
+            selected_files_backend = _prompt_for_execution_engine()
+            helper = _get_files_helper(
+                selected_files_backend,
+                context_root_dir=context.root_directory,  # type: ignore[arg-type] # could be None
+                datasource_name=datasource_name,
+            )
+        elif files_or_sql_selection == "2":
+            if not _verify_sqlalchemy_dependent_modules():
+                return None
+            selected_database = _prompt_user_for_database_backend()
+            helper = _get_sql_yaml_helper_class(selected_database, datasource_name)
+        else:
+            helper = None  # type: ignore[assignment] # causes error below
+            raise AttributeError(
+                "No `helper` selected"
+            )  # `None` has no `send_backend_choice_usage_message()`.
+            # Explicitly raised so that mypy understands that helper is not `None` below this line
+
+        helper.send_backend_choice_usage_message(context)
+        if not helper.verify_libraries_installed():
             return None
-        selected_database = _prompt_user_for_database_backend()
-        helper = _get_sql_yaml_helper_class(selected_database, datasource_name)
-    else:
-        helper = None  # type: ignore[assignment] # causes error below
-        raise AttributeError(
-            "No `helper` selected"
-        )  # `None` has no `send_backend_choice_usage_message()`.
-        # Explicitly raised so that mypy understands that helper is not `None` below this line
+        helper.prompt()
+        notebook_path = helper.create_notebook(context)
+        if jupyter is False:
+            cli_message(
+                f"To continue editing this Datasource, run <green>jupyter notebook {notebook_path}</green>"
+            )
+            send_usage_message(
+                data_context=context,
+                event=usage_event_end,
+                success=True,
+            )
+            return None
 
-    helper.send_backend_choice_usage_message(context)
-    if not helper.verify_libraries_installed():
-        return None
-    helper.prompt()
-    notebook_path = helper.create_notebook(context)
-    if jupyter is False:
-        cli_message(
-            f"To continue editing this Datasource, run <green>jupyter notebook {notebook_path}</green>"
-        )
-        send_usage_message(
-            data_context=context,
-            event=usage_event_end,
-            success=True,
-        )
-        return None
-
-    if notebook_path:
-        cli_message(
-            """<green>Because you requested to create a new Datasource, we'll open a notebook for you now to complete it!</green>\n\n"""
-        )
-        send_usage_message(
-            data_context=context,
-            event=usage_event_end,
-            success=True,
-        )
-        toolkit.launch_jupyter_notebook(notebook_path)
+        if notebook_path:
+            cli_message(
+                """<green>Because you requested to create a new Datasource, we'll open a notebook for you now to complete it!</green>\n\n"""
+            )
+            send_usage_message(
+                data_context=context,
+                event=usage_event_end,
+                success=True,
+            )
+            toolkit.launch_jupyter_notebook(notebook_path)
 
 
 class BaseDatasourceNewYamlHelper:
@@ -284,15 +293,24 @@ class BaseDatasourceNewYamlHelper:
         raise NotImplementedError
 
     def send_backend_choice_usage_message(self, context: FileDataContext) -> None:
-        send_usage_message(
-            data_context=context,
-            event=UsageStatsEvents.CLI_NEW_DS_CHOICE,
-            event_payload={
-                "type": self.datasource_type.value,
-                **self.usage_stats_payload,
-            },
-            success=True,
-        )
+        print("HEY in send_backend_choice_usage_message")
+        print(" event = ", UsageStatsEvents.CLI_NEW_DS_CHOICE)
+        print(" event_payload, type = ", self.datasource_type.value)
+        print("                 ", self.usage_stats_payload)
+        tracer: Tracer = context._get_tracer()
+        with tracer.start_as_current_span(__name__ + ".send_backend_choice_usage_message") as span:
+            span.set_attribute("type", self.datasource_type.value)
+            span.set_attribute("api_version", self.usage_stats_payload.get("api_version"))
+
+            send_usage_message(
+                data_context=context,
+                event=UsageStatsEvents.CLI_NEW_DS_CHOICE,
+                event_payload={
+                    "type": self.datasource_type.value,
+                    **self.usage_stats_payload,
+                },
+                success=True,
+            )
 
     def prompt(self) -> None:
         """Optional prompt if more information is needed before making a notebook."""

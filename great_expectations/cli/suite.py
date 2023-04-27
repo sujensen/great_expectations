@@ -4,6 +4,8 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import click
+from opentelemetry.sdk.trace import Tracer
+from opentelemetry.trace import StatusCode
 
 from great_expectations import DataContext
 from great_expectations import exceptions as gx_exceptions
@@ -136,30 +138,32 @@ def suite_new(
     Edit in jupyter notebooks, or skip with the --no-jupyter flag.
     """
     context: DataContext = ctx.obj.data_context
-    usage_event_end: str = ctx.obj.usage_event_end
+    tracer: Tracer = context._get_tracer()
+    with tracer.start_as_current_span(__name__ + ".suite_new") as span:
+        usage_event_end: str = ctx.obj.usage_event_end
 
-    # Only set to true if `--profile` or `--profile <PROFILER_NAME>`
-    profile: bool = _determine_profile(profiler_name)
+        # Only set to true if `--profile` or `--profile <PROFILER_NAME>`
+        profile: bool = _determine_profile(profiler_name)
 
-    interactive_mode, profile = _process_suite_new_flags_and_prompt(
-        context=context,
-        usage_event_end=usage_event_end,
-        interactive_flag=interactive_flag,
-        manual_flag=manual_flag,
-        profile=profile,
-        batch_request=batch_request,
-    )
+        interactive_mode, profile = _process_suite_new_flags_and_prompt(
+            context=context,
+            usage_event_end=usage_event_end,
+            interactive_flag=interactive_flag,
+            manual_flag=manual_flag,
+            profile=profile,
+            batch_request=batch_request,
+        )
 
-    _suite_new_workflow(
-        context=context,
-        expectation_suite_name=expectation_suite,
-        interactive_mode=interactive_mode,
-        profile=profile,
-        profiler_name=profiler_name,
-        no_jupyter=no_jupyter,
-        usage_event=usage_event_end,
-        batch_request=batch_request,
-    )
+        _suite_new_workflow(
+            context=context,
+            expectation_suite_name=expectation_suite,
+            interactive_mode=interactive_mode,
+            profile=profile,
+            profiler_name=profiler_name,
+            no_jupyter=no_jupyter,
+            usage_event=usage_event_end,
+            batch_request=batch_request,
+        )
 
 
 def _determine_profile(profiler_name: Optional[str]) -> bool:
@@ -196,30 +200,31 @@ def _process_suite_new_flags_and_prompt(
     Returns:
         Tuple with keys of processed parameters and boolean values
     """
-
-    interactive_mode: Optional[CLISuiteInteractiveFlagCombinations]
-    interactive_mode = _suite_convert_flags_to_interactive_mode(
-        interactive_flag, manual_flag
-    )
-
-    error_message: Optional[str] = None
-    if (
-        interactive_mode
-        == CLISuiteInteractiveFlagCombinations.ERROR_INTERACTIVE_TRUE_MANUAL_TRUE
-    ):
-        error_message = """Please choose either --interactive or --manual, you may not choose both."""
-
-    _exit_early_if_error(error_message, context, usage_event_end, interactive_mode)
-
-    if _suite_new_user_provided_any_flag(interactive_mode, profile, batch_request):
-        interactive_mode = _suite_new_process_profile_and_batch_request_flags(
-            interactive_mode, profile, batch_request
+    tracer: Tracer = context._get_tracer()
+    with tracer.start_as_current_span(__name__ + "._process_suite_new_flags_and_prompt") as span:
+        interactive_mode: Optional[CLISuiteInteractiveFlagCombinations]
+        interactive_mode = _suite_convert_flags_to_interactive_mode(
+            interactive_flag, manual_flag
         )
 
-    else:
-        interactive_mode, profile = _suite_new_mode_from_prompt(profile)
+        error_message: Optional[str] = None
+        if (
+            interactive_mode
+            == CLISuiteInteractiveFlagCombinations.ERROR_INTERACTIVE_TRUE_MANUAL_TRUE
+        ):
+            error_message = """Please choose either --interactive or --manual, you may not choose both."""
 
-    return interactive_mode, profile
+        _exit_early_if_error(error_message, context, usage_event_end, interactive_mode)
+
+        if _suite_new_user_provided_any_flag(interactive_mode, profile, batch_request):
+            interactive_mode = _suite_new_process_profile_and_batch_request_flags(
+                interactive_mode, profile, batch_request
+            )
+
+        else:
+            interactive_mode, profile = _suite_new_mode_from_prompt(profile)
+
+        return interactive_mode, profile
 
 
 def _suite_new_workflow(
@@ -234,107 +239,118 @@ def _suite_new_workflow(
         Union[str, Dict[str, Union[str, int, Dict[str, Any]]]]
     ] = None,
 ) -> None:
-    try:
-        datasource_name: Optional[str] = None
-        data_asset_name: Optional[str] = None
+    tracer: Tracer = context._get_tracer()
+    with tracer.start_as_current_span(__name__ + "._suite_new_workflow") as span:
+        try:
+            datasource_name: Optional[str] = None
+            data_asset_name: Optional[str] = None
 
-        additional_batch_request_args: Optional[
-            Dict[str, Union[str, int, Dict[str, Any]]]
-        ] = {"limit": 1000}
+            additional_batch_request_args: Optional[
+                Dict[str, Union[str, int, Dict[str, Any]]]
+            ] = {"limit": 1000}
 
-        if interactive_mode.value["interactive_flag"]:
-            if batch_request is not None and isinstance(batch_request, str):
-                batch_request = toolkit.get_batch_request_from_json_file(
-                    batch_request_json_file_path=batch_request,
-                    data_context=context,
-                    usage_event=usage_event,
-                    suppress_usage_message=False,
-                )
+            if interactive_mode.value["interactive_flag"]:
+                if batch_request is not None and isinstance(batch_request, str):
+                    batch_request = toolkit.get_batch_request_from_json_file(
+                        batch_request_json_file_path=batch_request,
+                        data_context=context,
+                        usage_event=usage_event,
+                        suppress_usage_message=False,
+                    )
 
-            if not batch_request:
-                batch_request = toolkit.get_batch_request_using_datasource_name(
-                    data_context=context,
-                    datasource_name=datasource_name,
-                    usage_event=usage_event,
-                    suppress_usage_message=False,
-                    additional_batch_request_args=additional_batch_request_args,
-                )
-                # In this case, we have "consumed" the additional_batch_request_args
-                additional_batch_request_args = {}
+                if not batch_request:
+                    batch_request = toolkit.get_batch_request_using_datasource_name(
+                        data_context=context,
+                        datasource_name=datasource_name,
+                        usage_event=usage_event,
+                        suppress_usage_message=False,
+                        additional_batch_request_args=additional_batch_request_args,
+                    )
+                    # In this case, we have "consumed" the additional_batch_request_args
+                    additional_batch_request_args = {}
 
-            data_asset_name = batch_request.get("data_asset_name")
-        else:
-            batch_request = None
+                data_asset_name = batch_request.get("data_asset_name")
+            else:
+                batch_request = None
 
-        # noinspection PyShadowingNames
-        suite: ExpectationSuite = toolkit.get_or_create_expectation_suite(
-            expectation_suite_name=expectation_suite_name,
-            data_context=context,
-            data_asset_name=data_asset_name,
-            usage_event=usage_event,
-            suppress_usage_message=False,
-            batch_request=batch_request,
-            create_if_not_exist=True,
-        )
-        expectation_suite_name = suite.expectation_suite_name
+            # noinspection PyShadowingNames
+            suite: ExpectationSuite = toolkit.get_or_create_expectation_suite(
+                expectation_suite_name=expectation_suite_name,
+                data_context=context,
+                data_asset_name=data_asset_name,
+                usage_event=usage_event,
+                suppress_usage_message=False,
+                batch_request=batch_request,
+                create_if_not_exist=True,
+            )
+            expectation_suite_name = suite.expectation_suite_name
 
-        toolkit.add_citation_with_batch_request(
-            data_context=context,
-            expectation_suite=suite,
-            batch_request=batch_request,
-        )
+            toolkit.add_citation_with_batch_request(
+                data_context=context,
+                expectation_suite=suite,
+                batch_request=batch_request,
+            )
 
-        send_usage_message(
-            data_context=context,
-            event=usage_event,
-            event_payload=interactive_mode.value,
-            success=True,
-        )
+            span.add_event(str(interactive_mode))
+            span.set_status(StatusCode.OK)
+            print("HEY in _suite_new_workflow")
+            print("  usage_event = ", usage_event)
+            print("  event_payload = ", str(interactive_mode.value))
+            send_usage_message(
+                data_context=context,
+                event=usage_event,
+                event_payload=interactive_mode.value,
+                success=True,
+            )
 
-        if batch_request:
-            datasource_name = batch_request.get("datasource_name")
+            if batch_request:
+                datasource_name = batch_request.get("datasource_name")
 
-        # This usage event is suppressed via suppress_usage_message but here because usage_event is not optional
-        usage_event = "cli.suite.edit.begin"  # or else we will be sending `cli.suite.new` which is incorrect
-        # do not want to actually send usage_message, since the function call is not the result of actual usage
-        _suite_edit_workflow(
-            context=context,
-            expectation_suite_name=expectation_suite_name,
-            profile=profile,
-            profiler_name=profiler_name,
-            usage_event=usage_event,
-            interactive_mode=interactive_mode,
-            no_jupyter=no_jupyter,
-            create_if_not_exist=True,
-            datasource_name=datasource_name,
-            batch_request=batch_request,
-            additional_batch_request_args=additional_batch_request_args,
-            suppress_usage_message=True,
-            assume_yes=False,
-        )
-    except (
-        gx_exceptions.DataContextError,
-        gx_exceptions.ProfilerError,
-        ValueError,
-        OSError,
-        SQLAlchemyError,
-    ) as e:
-        cli_message(string=f"<red>{e}</red>")
-        send_usage_message(
-            data_context=context,
-            event=usage_event,
-            event_payload=interactive_mode.value,
-            success=False,
-        )
-        sys.exit(1)
-    except Exception as e:
-        send_usage_message(
-            data_context=context,
-            event=usage_event,
-            event_payload=interactive_mode.value,
-            success=False,
-        )
-        raise e
+            # This usage event is suppressed via suppress_usage_message but here because usage_event is not optional
+            usage_event = "cli.suite.edit.begin"  # or else we will be sending `cli.suite.new` which is incorrect
+            # do not want to actually send usage_message, since the function call is not the result of actual usage
+            _suite_edit_workflow(
+                context=context,
+                expectation_suite_name=expectation_suite_name,
+                profile=profile,
+                profiler_name=profiler_name,
+                usage_event=usage_event,
+                interactive_mode=interactive_mode,
+                no_jupyter=no_jupyter,
+                create_if_not_exist=True,
+                datasource_name=datasource_name,
+                batch_request=batch_request,
+                additional_batch_request_args=additional_batch_request_args,
+                suppress_usage_message=True,
+                assume_yes=False,
+            )
+        except (
+            gx_exceptions.DataContextError,
+            gx_exceptions.ProfilerError,
+            ValueError,
+            OSError,
+            SQLAlchemyError,
+        ) as e:
+            cli_message(string=f"<red>{e}</red>")
+            span.add_event(str(interactive_mode))
+            span.set_status(StatusCode.ERROR)
+            send_usage_message(
+                data_context=context,
+                event=usage_event,
+                event_payload=interactive_mode.value,
+                success=False,
+            )
+            sys.exit(1)
+        except Exception as e:
+            span.add_event(str(interactive_mode))
+            span.set_status(StatusCode.ERROR)
+            send_usage_message(
+                data_context=context,
+                event=usage_event,
+                event_payload=interactive_mode.value,
+                success=False,
+            )
+            raise e
 
 
 def _suite_convert_flags_to_interactive_mode(
@@ -417,15 +433,19 @@ def _exit_early_if_error(
     usage_event_end: str,
     interactive_mode: CLISuiteInteractiveFlagCombinations,
 ) -> None:
-    if error_message is not None:
-        cli_message(string=f"<red>{error_message}</red>")
-        send_usage_message(
-            data_context=context,
-            event=usage_event_end,
-            event_payload=interactive_mode.value,
-            success=False,
-        )
-        sys.exit(1)
+    tracer: Tracer = context._get_tracer()
+    with tracer.start_as_current_span(__name__ + "._exit_early_if_error") as span:
+        if error_message is not None:
+            cli_message(string=f"<red>{error_message}</red>")
+            span.add_event(interactive_mode)
+            span.set_status(StatusCode.ERROR)
+            send_usage_message(
+                data_context=context,
+                event=usage_event_end,
+                event_payload=interactive_mode.value,
+                success=False,
+            )
+            sys.exit(1)
 
 
 def _suite_new_user_provided_any_flag(
@@ -547,38 +567,40 @@ def suite_edit(
     Read more about specifying batches of data in the documentation: https://docs.greatexpectations.io/
     """
     context: DataContext = ctx.obj.data_context
-    usage_event_end: str = ctx.obj.usage_event_end
+    tracer: Tracer = context._get_tracer()
+    with tracer.start_as_current_span(__name__ + ".suite_edit") as span:
+        usage_event_end: str = ctx.obj.usage_event_end
 
-    interactive_mode: CLISuiteInteractiveFlagCombinations = (
-        _process_suite_edit_flags_and_prompt(
+        interactive_mode: CLISuiteInteractiveFlagCombinations = (
+            _process_suite_edit_flags_and_prompt(
+                context=context,
+                usage_event_end=usage_event_end,
+                interactive_flag=interactive_flag,
+                manual_flag=manual_flag,
+                datasource_name=datasource_name,
+                batch_request=batch_request,
+            )
+        )
+
+        additional_batch_request_args: Optional[
+            Dict[str, Union[str, int, Dict[str, Any]]]
+        ] = {"limit": 1000}
+
+        _suite_edit_workflow(
             context=context,
-            usage_event_end=usage_event_end,
-            interactive_flag=interactive_flag,
-            manual_flag=manual_flag,
+            expectation_suite_name=expectation_suite,
+            profile=False,
+            profiler_name=None,
+            usage_event=usage_event_end,
+            interactive_mode=interactive_mode,
+            no_jupyter=no_jupyter,
+            create_if_not_exist=False,
             datasource_name=datasource_name,
             batch_request=batch_request,
+            additional_batch_request_args=additional_batch_request_args,
+            suppress_usage_message=False,
+            assume_yes=False,
         )
-    )
-
-    additional_batch_request_args: Optional[
-        Dict[str, Union[str, int, Dict[str, Any]]]
-    ] = {"limit": 1000}
-
-    _suite_edit_workflow(
-        context=context,
-        expectation_suite_name=expectation_suite,
-        profile=False,
-        profiler_name=None,
-        usage_event=usage_event_end,
-        interactive_mode=interactive_mode,
-        no_jupyter=no_jupyter,
-        create_if_not_exist=False,
-        datasource_name=datasource_name,
-        batch_request=batch_request,
-        additional_batch_request_args=additional_batch_request_args,
-        suppress_usage_message=False,
-        assume_yes=False,
-    )
 
 
 def _process_suite_edit_flags_and_prompt(
@@ -723,145 +745,154 @@ def _suite_edit_workflow(  # noqa: C901 - 19
     suppress_usage_message: bool = False,
     assume_yes: bool = False,
 ) -> None:
-    # suppress_usage_message flag is for the situation where _suite_edit_workflow is called by _suite_new_workflow().
-    # when called by _suite_new_workflow(), the flag will be set to True, otherwise it will default to False
-    if suppress_usage_message:
-        usage_event = None
+    # TODO span is created regardless of suppress_usage_message flag, below?
+    tracer: Tracer = context._get_tracer()
+    with tracer.start_as_current_span(__name__ + "._suite_edit_workflow") as span:
+        # suppress_usage_message flag is for the situation where _suite_edit_workflow is called by _suite_new_workflow().
+        # when called by _suite_new_workflow(), the flag will be set to True, otherwise it will default to False
+        if suppress_usage_message:
+            usage_event = None
 
-    # noinspection PyShadowingNames
-    suite: ExpectationSuite = toolkit.load_expectation_suite(
-        data_context=context,
-        expectation_suite_name=expectation_suite_name,
-        usage_event=usage_event,
-        create_if_not_exist=create_if_not_exist,
-    )
+        # noinspection PyShadowingNames
+        suite: ExpectationSuite = toolkit.load_expectation_suite(
+            data_context=context,
+            expectation_suite_name=expectation_suite_name,
+            usage_event=usage_event,
+            create_if_not_exist=create_if_not_exist,
+        )
 
-    try:
-        if interactive_mode.value["interactive_flag"] or profile:
-            batch_request_from_citation_is_up_to_date: bool = True
+        try:
+            if interactive_mode.value["interactive_flag"] or profile:
+                batch_request_from_citation_is_up_to_date: bool = True
 
-            batch_request_from_citation: Optional[
-                Union[str, Dict[str, Union[str, Dict[str, Any]]]]
-            ] = toolkit.get_batch_request_from_citations(expectation_suite=suite)
+                batch_request_from_citation: Optional[
+                    Union[str, Dict[str, Union[str, Dict[str, Any]]]]
+                ] = toolkit.get_batch_request_from_citations(expectation_suite=suite)
 
-            if batch_request is not None and isinstance(batch_request, str):
-                batch_request = toolkit.get_batch_request_from_json_file(
-                    batch_request_json_file_path=batch_request,
-                    data_context=context,
-                    usage_event=usage_event,
-                    suppress_usage_message=suppress_usage_message,
-                )
-                if batch_request != batch_request_from_citation:
-                    batch_request_from_citation_is_up_to_date = False
-
-            if not (
-                batch_request
-                and isinstance(batch_request, dict)
-                and BatchRequest(**batch_request)
-            ):
-                if (
-                    batch_request_from_citation
-                    and isinstance(batch_request_from_citation, dict)
-                    and BatchRequest(**batch_request_from_citation)
-                ):
-                    batch_request = copy.deepcopy(batch_request_from_citation)
-                else:
-                    batch_request = toolkit.get_batch_request_using_datasource_name(
+                if batch_request is not None and isinstance(batch_request, str):
+                    batch_request = toolkit.get_batch_request_from_json_file(
+                        batch_request_json_file_path=batch_request,
                         data_context=context,
-                        datasource_name=datasource_name,
                         usage_event=usage_event,
-                        suppress_usage_message=False,
-                        additional_batch_request_args=additional_batch_request_args,
+                        suppress_usage_message=suppress_usage_message,
                     )
                     if batch_request != batch_request_from_citation:
                         batch_request_from_citation_is_up_to_date = False
 
-            if not batch_request_from_citation_is_up_to_date:
-                toolkit.add_citation_with_batch_request(
-                    data_context=context,
-                    expectation_suite=suite,
+                if not (
+                    batch_request
+                    and isinstance(batch_request, dict)
+                    and BatchRequest(**batch_request)
+                ):
+                    if (
+                        batch_request_from_citation
+                        and isinstance(batch_request_from_citation, dict)
+                        and BatchRequest(**batch_request_from_citation)
+                    ):
+                        batch_request = copy.deepcopy(batch_request_from_citation)
+                    else:
+                        batch_request = toolkit.get_batch_request_using_datasource_name(
+                            data_context=context,
+                            datasource_name=datasource_name,
+                            usage_event=usage_event,
+                            suppress_usage_message=False,
+                            additional_batch_request_args=additional_batch_request_args,
+                        )
+                        if batch_request != batch_request_from_citation:
+                            batch_request_from_citation_is_up_to_date = False
+
+                if not batch_request_from_citation_is_up_to_date:
+                    toolkit.add_citation_with_batch_request(
+                        data_context=context,
+                        expectation_suite=suite,
+                        batch_request=batch_request,
+                    )
+
+            notebook_name: str = f"edit_{expectation_suite_name}.ipynb"
+            notebook_path: str = _get_notebook_path(context, notebook_name)
+
+            renderer: BaseNotebookRenderer
+            if profile:
+                if not assume_yes:
+                    toolkit.prompt_profile_to_create_a_suite(
+                        data_context=context, expectation_suite_name=expectation_suite_name
+                    )
+
+                renderer = SuiteProfileNotebookRenderer(
+                    context=context,
+                    expectation_suite_name=expectation_suite_name,
+                    profiler_name=profiler_name,
+                    batch_request=batch_request,
+                )
+                renderer.render_to_disk(notebook_file_path=notebook_path)
+            else:
+                renderer = SuiteEditNotebookRenderer.from_data_context(data_context=context)
+                # noinspection PyTypeChecker
+                renderer.render_to_disk(
+                    notebook_file_path=notebook_path,
+                    suite=suite,
                     batch_request=batch_request,
                 )
 
-        notebook_name: str = f"edit_{expectation_suite_name}.ipynb"
-        notebook_path: str = _get_notebook_path(context, notebook_name)
-
-        renderer: BaseNotebookRenderer
-        if profile:
-            if not assume_yes:
-                toolkit.prompt_profile_to_create_a_suite(
-                    data_context=context, expectation_suite_name=expectation_suite_name
+            if no_jupyter:
+                cli_message(
+                    string=f"To continue editing this suite, run <green>jupyter notebook {notebook_path}</green>"
+                )
+            else:
+                cli_message(
+                    string="""<green>Opening a notebook for you now to edit your expectation suite!
+    If you wish to avoid this you can add the `--no-jupyter` flag.</green>\n\n"""
                 )
 
-            renderer = SuiteProfileNotebookRenderer(
-                context=context,
-                expectation_suite_name=expectation_suite_name,
-                profiler_name=profiler_name,
-                batch_request=batch_request,
-            )
-            renderer.render_to_disk(notebook_file_path=notebook_path)
-        else:
-            renderer = SuiteEditNotebookRenderer.from_data_context(data_context=context)
-            # noinspection PyTypeChecker
-            renderer.render_to_disk(
-                notebook_file_path=notebook_path,
-                suite=suite,
-                batch_request=batch_request,
-            )
-
-        if no_jupyter:
-            cli_message(
-                string=f"To continue editing this suite, run <green>jupyter notebook {notebook_path}</green>"
-            )
-        else:
-            cli_message(
-                string="""<green>Opening a notebook for you now to edit your expectation suite!
-If you wish to avoid this you can add the `--no-jupyter` flag.</green>\n\n"""
-            )
-
-        payload: dict = edit_expectation_suite_usage_statistics(
-            data_context=context,
-            expectation_suite_name=suite.expectation_suite_name,
-            interactive_mode=interactive_mode,
-        )
-
-        if not suppress_usage_message:
-            send_usage_message(
+            payload: dict = edit_expectation_suite_usage_statistics(
                 data_context=context,
-                event=usage_event,
-                event_payload=payload,
-                success=True,
+                expectation_suite_name=suite.expectation_suite_name,
+                interactive_mode=interactive_mode,
             )
 
-        if not no_jupyter:
-            toolkit.launch_jupyter_notebook(notebook_path=notebook_path)
+            if not suppress_usage_message:
+                span.add_event(str(interactive_mode))
+                span.set_status(StatusCode.OK)  # StatusCode 1 is OK
+                send_usage_message(
+                    data_context=context,
+                    event=usage_event,
+                    event_payload=payload,
+                    success=True,
+                )
 
-    except (
-        gx_exceptions.DataContextError,
-        gx_exceptions.ProfilerError,
-        ValueError,
-        OSError,
-        SQLAlchemyError,
-    ) as e:
-        cli_message(string=f"<red>{e}</red>")
-        if not suppress_usage_message:
-            send_usage_message(
-                data_context=context,
-                event=usage_event,
-                event_payload=interactive_mode.value,
-                success=False,
-            )
-        sys.exit(1)
+            if not no_jupyter:
+                toolkit.launch_jupyter_notebook(notebook_path=notebook_path)
 
-    except Exception as e:
-        if not suppress_usage_message:
-            send_usage_message(
-                data_context=context,
-                event=usage_event,
-                event_payload=interactive_mode.value,
-                success=False,
-            )
-        raise e
+        except (
+            gx_exceptions.DataContextError,
+            gx_exceptions.ProfilerError,
+            ValueError,
+            OSError,
+            SQLAlchemyError,
+        ) as e:
+            cli_message(string=f"<red>{e}</red>")
+            if not suppress_usage_message:
+                span.add_event(str(interactive_mode))
+                span.set_status(StatusCode.ERROR)  # StatusCode 2 is ERROR
+                send_usage_message(
+                    data_context=context,
+                    event=usage_event,
+                    event_payload=interactive_mode.value,
+                    success=False,
+                )
+            sys.exit(1)
+
+        except Exception as e:
+            if not suppress_usage_message:
+                span.add_event(str(interactive_mode))
+                span.set_status(StatusCode.ERROR)
+                send_usage_message(
+                    data_context=context,
+                    event=usage_event,
+                    event_payload=interactive_mode.value,
+                    success=False,
+                )
+            raise e
 
 
 @mark.cli_as_deprecation
@@ -890,48 +921,52 @@ def suite_delete(ctx: click.Context, suite: str) -> None:
     Delete an Expectation Suite from the Expectation Store.
     """
     context: DataContext = ctx.obj.data_context
-    usage_event_end: str = ctx.obj.usage_event_end
-    try:
-        suite_names: List[str] = context.list_expectation_suite_names()
-    except Exception as e:
+    tracer: Tracer = context._get_tracer()
+    with tracer.start_as_current_span(__name__ + ".suite_delete") as span:
+        usage_event_end: str = ctx.obj.usage_event_end
+        try:
+            suite_names: List[str] = context.list_expectation_suite_names()
+        except Exception as e:
+            span.set_status(StatusCode.ERROR)
+            send_usage_message(
+                data_context=context,
+                event=usage_event_end,
+                success=False,
+            )
+            raise e
+        if not suite_names:
+            toolkit.exit_with_failure_message_and_stats(
+                data_context=context,
+                usage_event=usage_event_end,
+                suppress_usage_message=False,
+                message="<red>No expectation suites found in the project.</red>",
+            )
+
+        if suite not in suite_names:
+            toolkit.exit_with_failure_message_and_stats(
+                data_context=context,
+                usage_event=usage_event_end,
+                suppress_usage_message=False,
+                message=f"<red>No expectation suite named {suite} found.</red>",
+            )
+
+        if not (
+            ctx.obj.assume_yes
+            or toolkit.confirm_proceed_or_exit(
+                exit_on_no=False, data_context=context, usage_stats_event=usage_event_end
+            )
+        ):
+            cli_message(string=f"Suite `{suite}` was not deleted.")
+            sys.exit(0)
+
+        context.delete_expectation_suite(suite)
+        cli_message(string=f"Deleted the expectation suite named: {suite}")
+        span.set_status(StatusCode.OK)
         send_usage_message(
             data_context=context,
             event=usage_event_end,
-            success=False,
+            success=True,
         )
-        raise e
-    if not suite_names:
-        toolkit.exit_with_failure_message_and_stats(
-            data_context=context,
-            usage_event=usage_event_end,
-            suppress_usage_message=False,
-            message="<red>No expectation suites found in the project.</red>",
-        )
-
-    if suite not in suite_names:
-        toolkit.exit_with_failure_message_and_stats(
-            data_context=context,
-            usage_event=usage_event_end,
-            suppress_usage_message=False,
-            message=f"<red>No expectation suite named {suite} found.</red>",
-        )
-
-    if not (
-        ctx.obj.assume_yes
-        or toolkit.confirm_proceed_or_exit(
-            exit_on_no=False, data_context=context, usage_stats_event=usage_event_end
-        )
-    ):
-        cli_message(string=f"Suite `{suite}` was not deleted.")
-        sys.exit(0)
-
-    context.delete_expectation_suite(suite)
-    cli_message(string=f"Deleted the expectation suite named: {suite}")
-    send_usage_message(
-        data_context=context,
-        event=usage_event_end,
-        success=True,
-    )
 
 
 @suite.command(name="list")
@@ -939,42 +974,47 @@ def suite_delete(ctx: click.Context, suite: str) -> None:
 def suite_list(ctx: click.Context) -> None:
     """List existing Expectation Suites."""
     context: DataContext = ctx.obj.data_context
-    usage_event_end: str = ctx.obj.usage_event_end
-    try:
-        suite_names: List[str] = context.list_expectation_suite_names()
-    except Exception as e:
-        send_usage_message(
-            data_context=context,
-            event=usage_event_end,
-            success=False,
-        )
-        raise e
+    tracer: Tracer = context._get_tracer()
+    with tracer.start_as_current_span(__name__ + ".suite_list") as span:
+        usage_event_end: str = ctx.obj.usage_event_end
+        try:
+            suite_names: List[str] = context.list_expectation_suite_names()
+        except Exception as e:
+            span.set_status(StatusCode.ERROR)
+            send_usage_message(
+                data_context=context,
+                event=usage_event_end,
+                success=False,
+            )
+            raise e
 
-    suite_names_styled: List[str] = [
-        f" - <cyan>{suite_name}</cyan>" for suite_name in suite_names
-    ]
-    if len(suite_names_styled) == 0:
-        cli_message(string="No Expectation Suites found")
+        suite_names_styled: List[str] = [
+            f" - <cyan>{suite_name}</cyan>" for suite_name in suite_names
+        ]
+        if len(suite_names_styled) == 0:
+            cli_message(string="No Expectation Suites found")
+            span.set_status(StatusCode.OK)
+            send_usage_message(
+                data_context=context,
+                event=usage_event_end,
+                success=True,
+            )
+            return
+
+        list_intro_string: str
+        if len(suite_names_styled) == 1:
+            list_intro_string = "1 Expectation Suite found:"
+        else:
+            list_intro_string = f"{len(suite_names_styled)} Expectation Suites found:"
+        cli_message_list(
+            string_list=suite_names_styled, list_intro_string=list_intro_string
+        )
+        span.set_status(StatusCode.OK)
         send_usage_message(
             data_context=context,
             event=usage_event_end,
             success=True,
         )
-        return
-
-    list_intro_string: str
-    if len(suite_names_styled) == 1:
-        list_intro_string = "1 Expectation Suite found:"
-    else:
-        list_intro_string = f"{len(suite_names_styled)} Expectation Suites found:"
-    cli_message_list(
-        string_list=suite_names_styled, list_intro_string=list_intro_string
-    )
-    send_usage_message(
-        data_context=context,
-        event=usage_event_end,
-        success=True,
-    )
 
 
 def _get_notebook_path(context: DataContext, notebook_name: str) -> str:
